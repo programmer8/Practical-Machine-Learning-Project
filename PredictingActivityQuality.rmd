@@ -1,0 +1,168 @@
+---
+title: "Predicting Activity Quality from Activity Monitors"
+author: "Anonymous"
+output: html_document
+---
+
+## Introduction
+
+Using devices such as _Jawbone Up_, _Nike FuelBand_, and _Fitbit_, 
+many enthusiasts take measurements about themselves 
+regularly to improve their health, to find patterns in their behavior, or 
+simply because they are tech geeks. 
+One thing that people regularly do is quantify _how much_ of a particular activity they do, but they 
+rarely quantify _how well_  they do it. 
+In this project, we will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 
+participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+Our goal is to predict the manner in which they did the exercise.
+
+## The Data
+
+The data provided for this assignment consists of 19622 observations with 158 features, and 1 
+resulting classification.  The original data was immediately split into two sets, 80-20, for 
+training and testing purposes, giving us 15697 observations in our training set.  A sample look at 
+the summary of feature values shows that 
+many of the features contain either a significant number of blank's or NA's.
+
+```{r, collapse = TRUE}
+train.set = read.csv("pml-training.csv", row.names = 1)
+dim(train.set)
+
+set.seed(1234)
+train.idx = sample(1:nrow(train.set), size = nrow(train.set) * .80, replace = FALSE)
+
+test.set = train.set[-train.idx,]
+train.set = train.set[train.idx,]
+dim(train.set)
+
+summ = summary(train.set)
+summ[, c(12,13,17)]
+
+```
+
+These features, as well as the "bookkeeping" features whose values were not related to 
+accelerometer readings, were ignored for purposes of training our model. 
+We will also split off our classification result for compatibility with the submission 
+part our the assignment.  We see now that we have reduced our number of features to 52. 
+
+```{r, collapse = TRUE}
+
+features = !(grepl("^NA's *:15???", summ[7,]) | grepl("^ *:15???", summ[1,]) | 
+             grepl("user_name|timestamp|window|classe", colnames(summ)))
+features = colnames(train.set)[features]
+length(features)
+
+train.classe = train.set$classe
+train.set = train.set[, features]
+
+test.classe = test.set$classe
+test.set = test.set[, features]
+
+```
+
+## The Model(s)
+
+At this point we needed to choose a model to fit to our data.  Since this week's class 
+emphasized the "caret" package and the versatility of accessing many different model types 
+with a single function call, I began using "caret".  The "Random Forest"" method was also touted as 
+being very accurate, so that seemed like a good place to start.  However, I found that the default 
+call to 'train()' took an insanely long time to complete and I aborted the process.  I decided to 
+check out other models.  
+
+One approach I used was to create a separate 'glm' model for each classification.  This would require 
+that we run a prediction function 5 times to determine which classifiction fit best. There were two 
+attempts to make this feasible.  On the first attempt, the model sought to produce a value between 
+0 and 1, and the classification with the largest value was assigned to each observation.  This resulted 
+in an accuracy of about 73% on the training set.  On the second attempt, the model produced strictly 
+0 or 1 values, and 
+some remediation was required for observations where either no prediction function returned a 1 or 
+more than one did.  (I took the first instance of the largest value!)  This attempt had only 
+a slightly better accuracy on the training set of about 77%.  
+
+Unhappy with these results I went back to the lectures and slides and decided to give "boost" a try. 
+I have to admit I still don't quite understand the nuances but I decided to go with 'LogitBoost'. 
+The problem here is that the model doesn't always give an answer, resulting in roughly 10% of the 
+predictions being NA.  To 
+handle this, a second (and then a third) fit was run on those undetermined observations. 
+Calculating predicted classifictions then required possibly running up to three prediction functions. 
+This model's accuracy on the training set was nearly 91%.  
+
+```{r, eval = FALSE}
+# Discarded models
+
+library(caret)
+fit.rf = train(train.set$classe ~ ., method = "rf", prox = TRUE, data = train.set[, pred])
+
+
+fit.A <- train(as.integer(train.classe == "A") ~ ., method = "glm", data = train.set)
+fit.B <- train(as.integer(train.classe == "B") ~ ., method = "glm", data = train.set)
+fit.C <- train(as.integer(train.classe == "C") ~ ., method = "glm", data = train.set)
+fit.D <- train(as.integer(train.classe == "D") ~ ., method = "glm", data = train.set)
+fit.E <- train(as.integer(train.classe == "E") ~ ., method = "glm", data = train.set)
+
+
+fit.A <- train(as.integer(train.classe == "A") ~ ., method = "glm", family = "binomial", data = train.set)
+fit.B <- train(as.integer(train.classe == "B") ~ ., method = "glm", family = "binomial", data = train.set)
+fit.C <- train(as.integer(train.classe == "C") ~ ., method = "glm", family = "binomial", data = train.set)
+fit.D <- train(as.integer(train.classe == "D") ~ ., method = "glm", family = "binomial", data = train.set)
+fit.E <- train(as.integer(train.classe == "E") ~ ., method = "glm", family = "binomial", data = train.set)
+
+
+fit.1 <- train(train.classe ~ ., method = "LogitBoost", data = train.set)
+p1 = predict(fit.1, newdata = train.set)
+w1 = which(!is.na(p1))
+fit.2 <- train(train.classe[-w1] ~ ., method = "LogitBoost", data = train.set[-w1,])
+# etc.
+
+```
+
+Still unhappy with these results I resorted to the discussion forums, where I found several suggestions 
+for dealing with the extremely long training time that the 'RandomForest' model seemed to require. 
+The suggestion that helped most was the mention that the "caret"" package uses default parameters 
+for 'rf' that are unnecessary for very large sets and that slow things down exponentionally.  Simply 
+using the "randomForest" package directly might help.  And indeed, it did!
+
+```{r, collapse = TRUE}
+library(randomForest)
+
+if (file.exists("fit.rf.RDS")) {
+    
+    fit.rf = readRDS("fit.rf.RDS")
+    
+} else {
+    
+    set.seed(2345)
+    fit.rf <- randomForest(train.classe ~ ., data = train.set)
+    saveRDS(fit.rf, "fit.rf.RDS")
+}
+
+train.pred = predict(fit.rf, train.set)
+mean(train.pred == train.classe)
+
+test.pred = predict(fit.rf, test.set)
+mean(test.pred == test.classe)
+1 - mean(test.pred == test.classe)
+
+```
+
+## Conclusion
+
+The "RandomForest" model only required aproximately 1 minute to train, AND had an accuracy of 100% on the 
+training set!  This is awesome!  Clearly, this is the model to choose and running the model on the test 
+set, indicates that we can expect out-of-sample accuracy of 
+`r round(mean(test.pred == test.classe)*100, 2)`%, or an out-of-sample error rate of only 
+`r round(100 - mean(test.pred == test.classe)*100, 2)`%.
+
+We can also now run the model over the "pml-testing.csv" data to determine the classifications for those 
+observations.
+
+```{r, collapse = TRUE}
+
+submit.set = read.csv("pml-testing.csv", row.names = 1)
+submit.set = submit.set[, features]
+submit.pred = predict(fit.rf, submit.set)
+
+submit.pred
+
+```
+
